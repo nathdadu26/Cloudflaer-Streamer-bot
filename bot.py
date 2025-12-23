@@ -3,6 +3,8 @@ import time
 import asyncio
 import logging
 import boto3
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -21,12 +23,31 @@ R2_BUCKET = os.getenv("R2_BUCKET_NAME")
 R2_PUBLIC_URL = os.getenv("R2_PUBLIC_URL")
 VLC_WORKER = os.getenv("VLC_WORKER")
 
+PORT = int(os.getenv("PORT", 8000))
+
 DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # ───────── LOGGING ─────────
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
+
+# ───────── HEALTH CHECK SERVER ─────────
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+def start_health_server():
+    server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
+    log.info(f"Health check server running on port {PORT}")
+    server.serve_forever()
+
+threading.Thread(
+    target=start_health_server,
+    daemon=True
+).start()
 
 # ───────── R2 CLIENT ─────────
 s3 = boto3.client(
@@ -60,9 +81,9 @@ def progress_bar(p):
 @app.on_message(filters.command("start"))
 async def start(_, message):
     await message.reply_text(
-        "🤖 **Cloudflare R2 Upload Bot**\n\n"
-        "Send me any video or file 📁\n"
-        "I will upload it to cloud 🎬⬇️"
+        "🤖 Cloudflare R2 Upload Bot\n\n"
+        "Send any video or file 📁\n"
+        "I will upload it to cloud ☁️"
     )
 
 # ───────── MEDIA HANDLER ─────────
@@ -74,7 +95,7 @@ async def handle_media(_, message):
     file_size = media.file_size
     local_path = os.path.join(DOWNLOAD_DIR, file_name)
 
-    status = await message.reply_text("🚀 **Downloading...**")
+    status = await message.reply_text("🚀 Downloading...")
     start_time = time.time()
 
     async def download_progress(current, total):
@@ -83,7 +104,7 @@ async def handle_media(_, message):
         eta = (total - current) / max(speed, 1)
 
         text = (
-            "🚀 **Downloading...**\n\n"
+            "🚀 Downloading...\n\n"
             f"📁 `{file_name}`\n"
             f"👀 {human_size(total)}\n"
             f"⚡ {human_size(speed)}/s\n"
@@ -102,7 +123,7 @@ async def handle_media(_, message):
     )
 
     # ───────── UPLOAD TO R2 ─────────
-    await status.edit_text("☁️ **Uploading to Cloudflare R2...**")
+    await status.edit_text("☁️ Uploading to Cloudflare R2...")
 
     s3.upload_file(
         local_path,
@@ -120,7 +141,7 @@ async def handle_media(_, message):
     vlc_link = f"{VLC_WORKER}/?url={public_link}"
 
     caption = (
-        "✅ **Upload Complete !**\n\n"
+        "✅ Upload Complete!\n\n"
         f"📁 File Name: `{file_name}`\n"
         f"👀 File Size: `{human_size(file_size)}`"
     )
@@ -138,10 +159,10 @@ async def handle_media(_, message):
         disable_web_page_preview=True
     )
 
-    log.info("Upload finished: %s", file_name)
+    log.info("Upload completed: %s", file_name)
 
 # ───────── RUN ─────────
 if __name__ == "__main__":
-    print("🤖 Cloudflare R2 Bot Running...")
+    print("🤖 Bot + Health server running...")
     app.run()
 
