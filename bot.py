@@ -9,6 +9,10 @@ from dotenv import load_dotenv
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+# ───────── CONFIG ─────────
+PROGRESS_UPDATE_GAP = 5  # seconds
+DOWNLOAD_DIR = "downloads"
+
 # ───────── LOAD ENV ─────────
 load_dotenv()
 
@@ -25,7 +29,6 @@ VLC_WORKER = os.getenv("VLC_WORKER")
 
 PORT = int(os.getenv("PORT", 8000))
 
-DOWNLOAD_DIR = "downloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # ───────── LOGGING ─────────
@@ -40,14 +43,9 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"OK")
 
 def start_health_server():
-    server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
-    log.info(f"Health check server running on port {PORT}")
-    server.serve_forever()
+    HTTPServer(("0.0.0.0", PORT), HealthHandler).serve_forever()
 
-threading.Thread(
-    target=start_health_server,
-    daemon=True
-).start()
+threading.Thread(target=start_health_server, daemon=True).start()
 
 # ───────── R2 CLIENT ─────────
 s3 = boto3.client(
@@ -81,9 +79,9 @@ def progress_bar(p):
 @app.on_message(filters.command("start"))
 async def start(_, message):
     await message.reply_text(
-        "🤖 Cloudflare R2 Upload Bot\n\n"
+        "🤖 **Cloudflare R2 Upload Bot**\n\n"
         "Send any video or file 📁\n"
-        "I will upload it to cloud ☁️"
+        "Progress updates every 5 seconds ⏱️"
     )
 
 # ───────── MEDIA HANDLER ─────────
@@ -95,16 +93,27 @@ async def handle_media(_, message):
     file_size = media.file_size
     local_path = os.path.join(DOWNLOAD_DIR, file_name)
 
-    status = await message.reply_text("🚀 Downloading...")
-    start_time = time.time()
+    status = await message.reply_text("🚀 **Downloading...**")
 
+    start_time = time.time()
+    last_update_time = 0
+
+    # ───── DOWNLOAD PROGRESS (5s SAFE) ─────
     async def download_progress(current, total):
+        nonlocal last_update_time
+        now = time.time()
+
+        if now - last_update_time < PROGRESS_UPDATE_GAP and current != total:
+            return
+
+        last_update_time = now
+
         percent = current * 100 / total
-        speed = current / max(time.time() - start_time, 1)
+        speed = current / max(now - start_time, 1)
         eta = (total - current) / max(speed, 1)
 
         text = (
-            "🚀 Downloading...\n\n"
+            "🚀 **Downloading...**\n\n"
             f"📁 `{file_name}`\n"
             f"👀 {human_size(total)}\n"
             f"⚡ {human_size(speed)}/s\n"
@@ -122,13 +131,35 @@ async def handle_media(_, message):
         progress=download_progress
     )
 
-    # ───────── UPLOAD TO R2 ─────────
-    await status.edit_text("☁️ Uploading to Cloudflare R2...")
+    # ───── UPLOAD TO R2 ─────
+    await status.edit_text("☁️ **Uploading to Cloudflare R2...**")
+
+    uploaded = 0
+    last_upload_update = time.time()
+
+    def upload_progress(bytes_amount):
+        nonlocal uploaded, last_upload_update
+        uploaded += bytes_amount
+        now = time.time()
+
+        if now - last_upload_update < PROGRESS_UPDATE_GAP:
+            return
+
+        last_upload_update = now
+        percent = uploaded * 100 / file_size
+
+        asyncio.create_task(
+            status.edit_text(
+                "☁️ **Uploading...**\n\n"
+                f"`[{progress_bar(percent)}] {percent:.1f}%`"
+            )
+        )
 
     s3.upload_file(
         local_path,
         R2_BUCKET,
         file_name,
+        Callback=upload_progress,
         ExtraArgs={
             "ACL": "public-read",
             "ContentType": "video/mp4"
@@ -137,11 +168,12 @@ async def handle_media(_, message):
 
     os.remove(local_path)
 
+    # ───── FINAL MESSAGE ─────
     public_link = f"{R2_PUBLIC_URL}/{file_name}"
     vlc_link = f"{VLC_WORKER}/?url={public_link}"
 
     caption = (
-        "✅ Upload Complete!\n\n"
+        "✅ **Upload Complete !**\n\n"
         f"📁 File Name: `{file_name}`\n"
         f"👀 File Size: `{human_size(file_size)}`"
     )
@@ -163,6 +195,6 @@ async def handle_media(_, message):
 
 # ───────── RUN ─────────
 if __name__ == "__main__":
-    print("🤖 Bot + Health server running...")
+    print("🤖 Bot + Health server running (5s progress safe)...")
     app.run()
-
+    
